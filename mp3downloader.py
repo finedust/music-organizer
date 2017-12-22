@@ -25,50 +25,20 @@ from urllib.request import Request, urlopen
 from urllib.parse import quote
 from urllib.error import URLError
 
-from Crypto.Hash import SHA512
-
 from pytube import YouTube
 from ffmpy import FFmpeg as Converter
 from mutagen.easyid3 import EasyID3
 
-from settings import MUSIC_DOWNLOAD_DIRECTORY as SAVE_DIR, DOWNLOADED_FILES_HASHES_FILEPATH as HASHES_FILEPATH
+from utils import MUSIC_DOWNLOAD_DIRECTORY as SAVE_DIR, DOWNLOADED_VIDEOS_HASHES_FILEPATH as HASHES_FILEPATH, IGNORE_VIDEOS_HASHES_FILEPATH as IGNORE_HASHES, VIDEO_URL
+from utils import Song
+import utils
 
 
 SONGS_REGEX = r"(?P<title>[\w\ \']+)\ \-\ (?P<artist>[\w\ ]+)" # this is the input format for the songs
 USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.11 (KHTML, like Gecko) Chrome/23.0.1271.64 Safari/537.11" # do not change this user-agent
 YOUTUBE_SEARCH_QUERY = "https://www.youtube.com/results?search_query={}" # search videos using this query
-VIDEO_URL = "https://www.youtube.com/watch?v=" # videos first url part
 VIDEO_ID_REGEX = r"data\-context\-item\-id\=\"(?P<id>\w+)\"" # search for videos ids
 TEMP_DIR = ".tmp" # temporary working directory
-OUTPUT_FORMAT = "mp3"
-
-
-class Song:
-
-	def __init__(self, title, artist = None, album = None):
-		if title:
-			self.title = str(title).title()
-		else: raise RuntimeError("You must specify a title for the song.")
-		self.artist = str(artist).title() if artist else None
-		self.album = str(album).title() if album else None
-
-	def __str__(self):
-		string = ""
-		if self.artist: string += self.artist + " - "
-		string += self.title
-		if self.album: string += ", " + self.album
-		return string
-
-	def _filepath(self, fold = True): # return the preferred filename
-		string = ""
-		if fold:
-			if self.artist: string = pjoin(string, self.artist)
-			if self.album: string = pjoin(string, self.album)
-			string = pjoin(string, self.title)
-		else:
-			if self.artist: string += self.artist + " - "
-			string += self.title
-		return string
 
 
 def load_from_file(filename):
@@ -101,16 +71,6 @@ def load_from_stdin():
 
 	return songs
 
-def already_downloaded(vid, hashes_file = HASHES_FILEPATH):
-	id_hash = SHA512.new( str(vid).encode() ).hexdigest().upper()
-	if not isfile(hashes_file):
-		print( f"Hashes file {hashes_file} not found." )
-		return False
-	hf = open(hashes_file, 'r')
-	for hline in hf.readlines():
-		if hline.strip() == id_hash: return True
-	return False
-
 def search_song_url(song, hashes_file = HASHES_FILEPATH, download_another = False):
 	# Make the query using the provided information
 	if song.artist:
@@ -131,7 +91,10 @@ def search_song_url(song, hashes_file = HASHES_FILEPATH, download_another = Fals
 	for video_match in compile_regex(VIDEO_ID_REGEX).finditer(content): # find video links
 		if video_match:
 			video_id = video_match.group('id')
-			if hashes_file and already_downloaded(video_id, hashes_file):
+			if utils.match_hash(video_id, IGNORE_HASHES):
+				print( f"Video with id {video_id} is in the ignore list, searching another link." )
+				continue
+			elif hashes_file and utils.match_hash(video_id, hashes_file):
 				print( f"Video with id {video_id} already downloaded." )
 				if download_another:
 					print( "Searching for another link." )
@@ -144,15 +107,16 @@ def search_song_url(song, hashes_file = HASHES_FILEPATH, download_another = Fals
 	return None
 
 def download_song(url, song = None, auto = False, fold = True, overwrite = False, hashes_file = HASHES_FILEPATH):
-	if not url: return False
+	if not url: return False, None
 
 	yt = YouTube(url)
 
 
 	if song and not compile_regex( escape(song.title), IGNORECASE ).search( yt.title ) and not auto:
 		if input( f"Are you sure you want to download this song: {yt.title} ({url})? " ).lower() not in ['s', 'si', 'y', 'yes']:
-			print("Download canceled.")
-			return None
+			utils.add_hash(url, IGNORE_HASHES)
+			print("Download canceled, video added to ignore list.")
+			return None, None
 
 	if not song: song = Song(yt.title)
 
@@ -160,20 +124,20 @@ def download_song(url, song = None, auto = False, fold = True, overwrite = False
 	streams = yt.streams.filter( only_audio = True ).all() + yt.streams.filter( progressive = True ).all() # select both only audio and mixed streams
 	if not len(streams):
 		print( "No stream found for song: {song}" )
-		return None
+		return None, None
 	else:
 		print( "Found {} streams associated with this url: {}".format(len(streams), url) )
 	streams[0].download( TEMP_DIR ) # download the first
 
 	if not isdir(SAVE_DIR): makedirs(SAVE_DIR)
-	filepath = pjoin(SAVE_DIR, "{}.{}".format( song._filepath(fold), OUTPUT_FORMAT ))
+	filepath = pjoin(SAVE_DIR, "{}".format( song._filepath(fold) ))
 	if isfile(filepath):
 		if overwrite:
 			print( f"Overwriting {filepath}." )
 			remove(filepath)
 		else:
 			print( f"{filepath} already existing, skipping." )
-			return None
+			return None, None
 	if not isdir( dirname(filepath) ): makedirs( dirname(filepath) )
 	Converter(
 		global_options = '-loglevel quiet', # suppress output
@@ -181,20 +145,16 @@ def download_song(url, song = None, auto = False, fold = True, overwrite = False
 		outputs = {filepath : None}
 	).run()
 
-	# Add the hash to the downloaded files hash list
-	if hashes_file:
-		vid = url.split(VIDEO_URL)[1]
-		id_hash = SHA512.new( str(vid).encode() ).hexdigest().upper()
-		f = open(hashes_file, 'a')
-		f.write( f"{id_hash}\n" )
-		f.close()
+	if hashes_file: utils.add_hash(url, hashes_file)
 
 	return filepath, song.title
 
 def edit_tags(filepath, song):
 	audio_file = EasyID3(filepath)
+	if not song.title:
+		raise RuntimeError("Please, provide at least the song title")
 	audio_file["title"] = song.title
-	audio_file["artist"] = song.artist
+	if song.artist: audio_file["artist"] = song.artist
 	if song.album: audio_file["album"] = song.album
 	audio_file.save()
 
@@ -207,7 +167,7 @@ if __name__ == '__main__':
 	parser = ArgumentParser(description = "Download songs from YouTube")
 	parser.add_argument('-f', '--from-file', metavar = 'FILENAME', dest = 'file', help = "Load a list of songs from a file")
 	parser.add_argument('--hashes-file', default = HASHES_FILEPATH, help = "Custom path for the file that contains the video hashes")
-	parser.add_argument('-da', '--download-another', action = 'store_true', help = "Download another version is a video has already been downloaded")
+	parser.add_argument('-da', '--download-another', action = 'store_true', help = "Download another version if a video has already been downloaded")
 	parser.add_argument('-oe', '--overwrite', '--overwrite-existing', action = 'store_true', help = "Overwrite existing files")
 	parser.add_argument('-nf', '--do-not-fold', dest = 'fold', action = 'store_false', help = "Don't create artist and album directories")
 	parser.add_argument('--auto', action = 'store_true', help = "Do not prompt anything, go straight forward.")
@@ -233,7 +193,7 @@ if __name__ == '__main__':
 			outputfile, title = download_song( search_song_url(s, args.hashes_file, args.download_another), s, args.auto, args.fold, args.overwrite, args.hashes_file )
 			if outputfile:
 				print( f"Downloaded: {s} to {outputfile}" )
-			edit_tags(outputfile, s)
+				edit_tags(outputfile, s)
 		print( f"Done. Downloaded {num_songs}" )
 
 	except KeyboardInterrupt:
