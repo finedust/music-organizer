@@ -10,6 +10,8 @@ from os.path import join as pjoin, isfile
 
 from Crypto.Hash import SHA512
 
+from re import compile as compile_regex
+
 
 # Classes
 
@@ -47,7 +49,11 @@ DOWNLOADED_VIDEOS_HASHES_FILEPATH = MUSIC_DOWNLOAD_DIRECTORY + ".hashes.lst"
 IGNORE_VIDEOS_HASHES_FILEPATH = MUSIC_DOWNLOAD_DIRECTORY + ".ignore.lst"
 OUTPUT_FORMAT = "mp3"
 
+# Costants
 VIDEO_URL = "https://www.youtube.com/watch?v=" # video's url first part
+
+SONGS_REGEX = r"(?P<title>[\w\ \']+)\ \-\ (?P<artist>[\w\ \.\']+)" # this is the input format for the songs
+
 
 
 # Functions
@@ -55,7 +61,7 @@ VIDEO_URL = "https://www.youtube.com/watch?v=" # video's url first part
 
 def add_hash(url, hashes_file):
 	"""
-Add the hash to the downloaded files hash list
+	Add the hash to the downloaded files hash list
 	"""
 	vid = url.split(VIDEO_URL)[1]
 	id_hash = SHA512.new( str(vid).encode() ).hexdigest().upper()
@@ -65,7 +71,7 @@ Add the hash to the downloaded files hash list
 
 def match_hash(vid, hashes_file):
 	"""
-Match the video id in the provided file
+	Match the video id in the provided file
 	"""
 	id_hash = SHA512.new( str(vid).encode() ).hexdigest().upper()
 	if not isfile(hashes_file):
@@ -75,3 +81,23 @@ Match the video id in the provided file
 	for hline in hf.readlines():
 		if hline.strip() == id_hash: return True
 	return False
+
+def load_songs_from_file(filename):
+	"""
+	Load a list of songs from a file
+	"""
+	sf = open(filename, 'r')
+	lines = sf.readlines()
+	sf.close()
+
+	sgs = list()
+	for s in lines:
+		if not s.strip(): continue # skip empty lines
+		matched_desc = compile_regex(SONGS_REGEX).match(s)
+		if matched_desc:
+			song = Song( *matched_desc.groups() )
+			sgs.append(song)
+		else:
+			print( f"This line is not well formatted: {s}" )
+
+	return sgs

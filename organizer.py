@@ -22,7 +22,7 @@ from os.path import join as pjoin, dirname, isdir
 from shutil import move
 
 from mp3downloader import download_song, edit_tags, search_song_url
-from utils import Song
+from utils import Song, load_songs_from_file
 from dgclient import get_artist_releases, get_songs, get_album_releases
 
 from datetime import datetime, timedelta
@@ -49,14 +49,23 @@ def download():
 		edit_tags(outputfile, song)
 		print( f"Added tags to {song.title}" )
 		return outputfile
+	elif args.file:
+		for song in load_songs_from_file(args.file):
+			link = search_song_url(song, download_another = args.download_another)
+			filepath, title = download_song(link, song, fold = args.fold, overwrite = args.overwrite )
+			if filepath:
+				print( f"Downloaded: {song} to {filepath}" )
+				edit_tags(filepath, song)
 	else:
 		if args.title:
 			song = Song(args.title, args.artist, args.album)
 			link = search_song_url(song, download_another = args.download_another)
 			filepath, title = download_song(link, song, fold = args.fold, overwrite = args.overwrite )
-			print( f"Downloaded: {song} to {filepath}" )
-			edit_tags(filepath, song)
-			return filepath
+			if filepath:
+				print( f"Downloaded: {song} to {filepath}" )
+				edit_tags(filepath, song)
+				return filepath
+			else: return False
 		elif args.artist:
 			if args.album:
 				album_release = get_album_releases(args.album, args.artist)[0]
@@ -104,6 +113,8 @@ if __name__ == '__main__':
 	sub_parsers = parser.add_subparsers(dest = 'subparser', required = False)
 	download_parser = sub_parsers.add_parser('download')
 	download_parser.add_argument('-u', '--url', help = "Download directly by URL")
+	download_parser.add_argument('-f', '--from-file', metavar = 'FILENAME', dest = 'file', help = "Load a list of songs from a file")
+	# TODO: make -f and -u mutual exclusive
 	download_parser.add_argument('-t', '--title', '--song-title', help = "Search the song with this title")
 	download_parser.add_argument('--artist', help = "Specify the artist (if title is not present top songs of this artist will be downloaded)")
 	download_parser.add_argument('--album', help = "Specify the album (if title is absent the whole album will be downloaded)")
